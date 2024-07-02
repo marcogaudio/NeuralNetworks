@@ -34,14 +34,3 @@ The dataset used in this project is the Pima Indians Diabetes dataset, which is 
 - Age
 
 The target variable is `diabetes`, indicating whether a patient has diabetes (positive) or not (negative).
-
-## Installation
-
-To run this project, you need to have R and the following packages installed:
-
-```r
-install.packages("nnet")
-install.packages("mlbench")
-install.packages("caret")
-install.packages("pROC")
-install.packages("e1071")
