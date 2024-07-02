@@ -1,0 +1,851 @@
+---
+title: "Neural Networks"
+subtitle: Master in Artificial Intelligence and Data Science A.A. 2023/2024
+author: "Gaudio Marco"
+date: today
+format:
+ html:
+   code-background: true
+   fig-width: 8
+   fig-height: 4
+   fig-align: center
+   code-fold: false
+   toc: true
+   fig-format: png
+   toc-location: right
+   highlight-style: github
+   code-block-border-left: "#4f6952"
+   code-block-bg: true
+   number-sections: true
+   code-link: true
+   reference-links: true
+   reference-location: margin
+   embed-resources: true
+
+   include-after-body: source_proj/sp_afterbody.html
+
+execute:
+  warning: false
+  message: false
+  cache: true
+css: source_proj/sp.css
+---
+
+Questo progetto accademico ha l'obiettivo di sviluppare dei modelli di Neural Networks  per la previsione del diabete utilizzando il dataset **Pima Indians Diabetes**. Il dataset, ampiamente riconosciuto e utilizzato nella comunità scientifica, contiene informazioni diagnostiche su pazienti di etnia Pima, inclusi parametri medici e anagrafici. L'obiettivo del progetto è sviluppare un modello di rete neurale accurato in grado di classificare i pazienti come diabetici o non diabetici, basandosi sulle caratteristiche fornite. Questo progetto, esplora varie tecniche di pre-processing dei dati, come la normalizzazione, nonché l'implementazione di componenti avanzati della rete neurale, inclusi diversi tipi di funzioni di attivazione, tecniche di regolarizzazione e ottimizzatori.
+
+# Setup environment e librerie
+
+Nel seguente chunk di codice sono stati utilizzati i pacchetti `tensorflow` e `keras` per creare un enviroment che permetta di utilizzare tutte le funzionalità di ML native dei due framework di python.
+
+```{r}
+#| output: false
+# unlink(paste0(reticulate::virtualenv_root(), "/r-tensorflow"), force = TRUE, recursive = TRUE)
+library(tensorflow)
+# install_tensorflow(envname = "r-tensorflow")
+
+# install.packages("keras")
+library(keras)
+# install_keras()
+```
+
+```{r}
+#| echo: false
+#| output: false
+library(caret)
+library(tidyverse)
+library(DT)
+```
+
+# Analisi dati
+
+Il dataset contiene 768 righe e 9 colonne. Ogni riga rappresenta un paziente, e ogni colonna rappresenta una caratteristica (ad eccezione dell'ultima colonna, che è l'etichetta di classe). Le caratteristiche sono le seguenti:
+
+* Numero di gravidanze - `V1`
+* Concentrazione di glucosio nel sangue a 2 ore nel test di tolleranza orale al glucosio -`V2`
+* Pressione diastolica del sangue (mm Hg) - `V3`
+* Spessore della piega cutanea del tricipite (mm) - `V4`
+* Insulina sierica a 2 ore (mu U/ml) - `V5`
+* Indice di massa corporea (peso in kg / (altezza in m)^2) - `V6`
+* Funzione della storia familiare del diabete (valore ponderato) - `V7`
+* Età (anni) - `V8`
+* Diagnosi (0 o 1, dove 1 indica la presenza di diabete) - `V9`
+  
+```{r}
+diabetes <- read.csv("./data/pima-indians-diabetes.data.csv", header = F)
+
+# conversione dei dati in formato data.frame
+diabetes <- as.data.frame(diabetes)
+```
+
+
+
+## Preparazione dataset
+
+Utilizzo il pacchetto `caret` per effettuare la divisione tra train set (60%) e test set (40%).
+
+```{r}
+train_index <- caret::createDataPartition(
+  diabetes$V9,
+  p = 0.6
+  )
+
+train <- diabetes[train_index$Resample1, ]
+test <-  diabetes[-train_index$Resample1, ]
+```
+
+# Analisi esplorativa dei dati
+
+Questa sezione include la valutazione delle distribuzioni delle variabili, l'analisi delle correlazioni, l'individuazione di outlier e la verifica di eventuali anomalie, tutte operazioni fondamentali per costruire modelli predittivi accurati e affidabili.
+
+## split per diagnosi (0/1)
+
+La tabella di seguito mostra lo split delle osservazioni per diagnosi. Si noti che circa il 35% dei pazienti presenti all'interno del database è affetto da diabete.
+
+```{r}
+#| eval: true
+#| echo: false
+#| results: markup
+#| 
+diabetes %>%
+  count(V9) %>%
+  mutate(percentage = paste0(round(n / sum(n) * 100, 2), "%")) %>% 
+  DT::datatable(
+    options = list(
+          dom = 't'
+          )
+  )
+```
+
+## Distribuzioni
+
+Nel tabset di seguito sono rappresentate le distribuzioni di alcune delle variabili del dataset in oggetto.
+
+::: {.panel-tabset}
+
+### per età
+
+```{r}
+#| echo: false
+
+# distribuzione età
+ggplot(diabetes, aes(x = V8)) + 
+  geom_histogram(binwidth = 5, fill = "lightblue", color = "black") + 
+  theme_minimal() +
+  labs(title = "Distribuzione dell'età", x = "Età", y = "Frequenza")
+```
+
+### per numero di gravidanze
+
+```{r}
+#| echo: false
+
+# distribuzione per gravid.
+ggplot(diabetes, aes(x = V1)) + 
+  geom_histogram(binwidth = 5, fill = "lightblue", color = "black") + 
+  theme_minimal() +
+  labs(title = "Distribuzione del numero di gravidanze", x = "Età", y = "Frequenza")
+
+```
+
+### per pressione diastolica
+
+```{r}
+#| echo: false
+
+# distribuzione dias
+ggplot(diabetes %>% 
+         dplyr::filter(V4 != 0), aes(x = V4)) + 
+  geom_histogram(binwidth = 5, fill = "lightblue", color = "black") + 
+  theme_minimal() +
+  labs(title = "Distribuzione della pressione diastolica", x = "Età", y = "Frequenza")
+
+```
+
+:::
+
+
+## Analisi di correlazione
+
+Dalla seguente matrice di correlazione è possibile notare che alcune variabili risultano essere leggermente (negativamente) correlate tra di loro (e.g., V8 - età e V1 - numero di gravidanze).
+Di solito è buona norma effettuare una analisi della correlazione prima di lanciare qualsiasi modello, in modo tale da indagare ulteriormente alcune variabili che potrebbero non essere necessarie.
+
+```{r}
+#| echo: false
+diabetes %>%
+  dplyr::select_if(is.numeric) %>%
+  cor() %>%
+  as.data.frame() %>%
+  rownames_to_column(var = "Variable1") %>%
+  gather(key = "Variable2", value = "Correlation", -Variable1) %>%
+  ggplot(aes(x = Variable1, y = Variable2, fill = Correlation)) +
+  geom_tile(color = "white") +
+  scale_fill_gradient2(low = "blue", high = "red", mid = "white", midpoint = 0, limit = c(-1, 1), space = "Lab", name = "Correlazione") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  labs(title = "Matrice di correlazione")
+
+
+```
+
+
+# Modelli
+
+In questa sezione vengono addestrate le varie reti neurali. Sono state utilizzate diverse configurazioni, modificando il numero di nodi, il numero di layer nascosti, le funzioni di attivazione e utilizzando alcune tecniche per prevenire l'overfitting.
+
+Tuttavia, per quanto riguarda l'ottimizzazione dell'addestramento e la misura di accuratezza, per tutti i modelli sono stati utilizzati rispettivamente **l'adam optimizer** e la **binary crossentropy**.
+Infine, come funzione di attivazione del layer terminale, viene utilizzata sempre la *sigmoid*.
+
+Di seguito alcune specifiche dei 5 modelli utilizzati:
+
+* **modello A**: due layer nascosti (32 e 18 nodi) utilizzando la funzione di attivazione *relu*. 80 epoche per addestrare il modello (per evitare overfitting dopo la 80esima epoca).
+
+* **modello B**: tre layer nascosti (rispettivamente 128, 64, e 32 nodi) utilizzando la funzione di attivazione *relu*. In questo caso il numero di epoche utilizzato è 150.
+
+* **modello C**: stesse specifiche del modello B, ma utilizzando la funzione di attivazione **tanh** (tangente iperbolica). Inoltre, è stato aggiunto per ogni layer un **kernel regularizer L2** per prevenire l'overfitting, aggiungendo un termine di penalizzazione alla funzione di perdita basato sui pesi del modello. Infine, viene aggiunto un layer per normalizzare l'output di ogni livello della rete neurale ed un **Dropout**  per *"spegnere"* in maniera casuale il 15% dei neuroni. Questo previene l'overfitting forzando la rete a non dipendere troppo da particolari neuroni e incoraggiando una maggiore generalizzazione.
+
+* **modello D**: stesse specifiche del modello A, ma utilizzando la funzione di attivazione **tanh** per i layer nascosti.
+
+* **modello E**: modello con tre layer nascosti (64, 32, 32 nodi rispettivamente), ma in cui vengono utilizzate la *batch normalization*, il kernel regularizer L2 e il *Drop Out*, come nel caso del modello C.
+
+## Normalizzazione dei dati
+
+La normalizzazione dei dati è un passaggio fondamentale nel pre-processing quando si utilizzano reti neurali per diverse ragioni:
+
+* Miglioramento della stabilità numerica;
+* Riduzione della dipendenza dalla scala degli input delle features;
+* Uniformità delle caratteristiche.
+
+Per tale motivo, prima di effettuare qualsiasi analisi, si procede con la normalizzazione dei dati (min-max scaler normalization).
+
+```{r}
+# Min-max scaler
+
+x_train <- train[ , -dim(train)[2]]
+y_train <- train[ , dim(train)[2]]
+
+x_test <- test[ , -dim(test)[2]]
+y_test <- test[ , dim(test)[2]]
+
+# Creo un oggetto preProcess
+preProcess_range_model <- caret::preProcess(x_train, method = 'range')
+
+# Transformo i dati di train
+x_train <- predict(preProcess_range_model, x_train)
+
+# Transformo i dati di test
+x_test <- as.matrix(predict(preProcess_range_model, x_test))
+
+# ridimensiono il training set
+# x_train <- keras::array_reshape(x_train, c(461, 8))
+x_train <- as.matrix(x_train)
+y_train <- keras::array_reshape(y_train, c(461, 1))
+```
+
+
+
+## Fit del modello A
+```{r}
+
+# Struttura della rete
+network_A <- keras::keras_model_sequential() %>% 
+  keras::layer_dense(units = 32,
+              activation = "relu",
+              input_shape = dim(x_train)[2]) %>%
+  keras::layer_dense(units = 16, 
+              activation = "relu",
+              ) %>%
+  keras::layer_dense(units = 1, 
+              activation = "sigmoid"
+              )
+```
+
+
+```{r}
+# Compilazione della rete
+network_A %>% compile(
+  optimizer = "adam",
+  loss = "binary_crossentropy",
+  metrics = "accuracy"
+)
+```
+
+
+```{r}
+# Addestramento della rete
+fit_A <- network_A %>% 
+  fit(x_train, y_train, 
+                epochs = 80, batch_size = 32, validation_split = 0.3)
+```
+
+## Fit del modello B
+```{r}
+
+# Struttura della rete
+network_B <- keras::keras_model_sequential() %>% 
+  keras::layer_dense(units = 128,
+              activation = "relu",
+              input_shape = dim(x_train)[2]) %>%
+  keras::layer_dense(units = 64, 
+              activation = "relu"
+              ) %>%
+  keras::layer_dense(units = 32, 
+              activation = "relu"
+              ) %>%
+  keras::layer_dense(units = 1, 
+              activation = "sigmoid"
+              )
+```
+
+
+```{r}
+# Compilazione della rete
+network_B %>% compile(
+  optimizer = "adam",
+  loss = "binary_crossentropy",
+  metrics = "accuracy"
+)
+```
+
+
+```{r}
+# Addestramento della rete
+fit_B <- network_B %>% 
+  fit(x_train, y_train, 
+                epochs = 150, batch_size = 32, validation_split = 0.3)
+```
+
+
+## Fit del modello C
+```{r}
+
+# Struttura della rete
+network_C <- keras::keras_model_sequential() %>% 
+  keras::layer_dense(units = 128,
+              activation = "tanh",
+              kernel_regularizer = regularizer_l2(0.01),
+              input_shape = dim(x_train)[2]) %>%
+  keras::layer_normalization() %>% 
+  layer_dropout(0.15) %>%
+  keras::layer_dense(units = 64, 
+              activation = "tanh",
+              kernel_regularizer = regularizer_l2(0.01)
+              ) %>%
+  keras::layer_normalization() %>% 
+  layer_dropout(0.15) %>%
+  keras::layer_dense(units = 32,
+              activation = "tanh",
+              kernel_regularizer = regularizer_l2(0.01)
+              ) %>%
+  keras::layer_normalization() %>%  
+  layer_dropout(0.15) %>% 
+  keras::layer_dense(units = 1, 
+              activation = "sigmoid", 
+              kernel_regularizer = regularizer_l2(0.01)
+              )
+```
+
+
+```{r}
+# Compilazione della rete
+network_C %>% compile(
+  optimizer = "adam",
+  loss = "binary_crossentropy",
+  metrics = "accuracy"
+)
+```
+
+
+```{r}
+# Addestramento della rete
+fit_C <- network_C %>% 
+  fit(x_train, y_train, 
+                epochs = 150, batch_size = 32, validation_split = 0.3)
+```
+
+
+
+## Fit del modello D
+Stesso modello di A, ma con tanh al posto di relu
+```{r}
+
+# Struttura della rete
+network_D <- keras::keras_model_sequential() %>% 
+  keras::layer_dense(units = 32,
+              activation = "tanh",
+              input_shape = dim(x_train)[2]) %>%
+  keras::layer_dense(units = 16, 
+              activation = "tanh",
+              ) %>%
+  keras::layer_dense(units = 1, 
+              activation = "sigmoid"
+              )
+```
+
+
+```{r}
+# Compilazione della rete
+network_D %>% compile(
+  optimizer = "adam",
+  loss = "binary_crossentropy",
+  metrics = "accuracy"
+)
+```
+
+
+```{r}
+# Addestramento della rete
+fit_D <- network_D %>% 
+  fit(x_train, y_train, 
+                epochs = 80, batch_size = 32, validation_split = 0.3)
+```
+
+
+
+
+
+
+## Fit del modello E
+```{r}
+
+# Struttura della rete
+network_E <- keras::keras_model_sequential() %>% 
+  keras::layer_dense(units = 64,
+                     activation = "tanh",
+                     kernel_regularizer = regularizer_l2(0.01),
+                     input_shape = dim(x_train)[2]) %>%
+  keras::layer_batch_normalization() %>% 
+  keras::layer_dropout(0.15) %>% 
+  keras::layer_dense(units = 32, 
+                     activation = "tanh",
+                     kernel_regularizer = regularizer_l2(0.01),
+  ) %>%
+  keras::layer_batch_normalization() %>% 
+  keras::layer_dropout(0.15) %>%
+  keras::layer_dense(units = 32, 
+                     activation = "tanh",
+                     kernel_regularizer = regularizer_l2(0.01),
+  ) %>% 
+  keras::layer_batch_normalization() %>% 
+  keras::layer_dropout(0.15) %>% 
+  keras::layer_dense(units = 1, 
+                     activation = "sigmoid"
+  )
+```
+
+
+```{r}
+# Compilazione della rete
+network_E %>% compile(
+  optimizer = "adam",
+  loss = "binary_crossentropy",
+  metrics = "accuracy"
+)
+```
+
+
+```{r}
+# Addestramento della rete
+fit_E <- network_E %>% 
+  fit(x_train, y_train, 
+                epochs = 80, batch_size = 32, validation_split = 0.3)
+```
+
+
+
+
+
+
+
+# Loss Comparison
+
+```{r}
+#| include: false
+#| eval: true
+
+fit_db_A <- tibble(
+  epoch = 1:80,
+  train_loss = fit_A$metrics$loss,
+  val_loss = fit_A$metrics$val_loss,
+  train_accuracy = fit_A$metrics$accuracy,
+  val_accuracy = fit_A$metrics$val_accuracy,
+  fit = "A"
+)
+
+fit_db_A %>%
+  dplyr::mutate_if(is.numeric, ~round(., 4)) %>% 
+  DT::datatable(
+    options = list(
+      dom = "t"
+    )
+  )
+
+```
+
+::: {.panel-tabset}
+
+## modello A
+
+```{r}
+#| echo: false
+metrics_long_loss <- reshape2::melt(fit_db_A, id.vars = 'epoch', measure.vars = c('train_loss',
+                                                                           'val_loss'), 
+                     variable.name = 'Type', value.name = 'Value')
+
+
+ggplot(metrics_long_loss, aes(x = epoch, y = Value, color = Type)) +
+  geom_line(size = 1) +
+  scale_color_manual(values = c("train_loss" = "lightblue", "val_loss" = "lightgreen")) +
+  labs(title = "Training and Validation Loss",
+       x = "Epoch",
+       y = "Loss") +
+  theme_minimal() +
+  theme(legend.title = element_blank())
+
+
+```
+
+
+## modello B
+
+```{r}
+#| include: false
+#| eval: true
+
+fit_db_B <- tibble(
+  epoch = 1:150,
+  train_loss = fit_B$metrics$loss,
+  val_loss = fit_B$metrics$val_loss,
+  train_accuracy = fit_B$metrics$accuracy,
+  val_accuracy = fit_B$metrics$val_accuracy,
+  fit = "B"
+)
+
+fit_db_B %>%
+  dplyr::mutate_if(is.numeric, ~round(., 4)) %>% 
+  DT::datatable(
+    options = list(
+      dom = "t"
+    )
+  )
+
+```
+
+
+
+
+```{r}
+#| echo: false
+metrics_long_loss <- reshape2::melt(fit_db_B, id.vars = 'epoch', measure.vars = c('train_loss',
+                                                                           'val_loss'), 
+                     variable.name = 'Type', value.name = 'Value')
+
+
+ggplot(metrics_long_loss, aes(x = epoch, y = Value, color = Type)) +
+  geom_line(size = 1) +
+  scale_color_manual(values = c("train_loss" = "lightblue", "val_loss" = "lightgreen")) +
+  labs(title = "Training and Validation Loss",
+       x = "Epoch",
+       y = "Loss") +
+  theme_minimal() +
+  theme(legend.title = element_blank())
+
+
+```
+
+## modello C
+
+```{r}
+#| include: false
+#| eval: true
+
+fit_db_C <- tibble(
+  epoch = 1:150,
+  train_loss = fit_C$metrics$loss,
+  val_loss = fit_C$metrics$val_loss,
+  train_accuracy = fit_C$metrics$accuracy,
+  val_accuracy = fit_C$metrics$val_accuracy,
+  fit = "C"
+)
+
+fit_db_C %>%
+  dplyr::mutate_if(is.numeric, ~round(., 4)) %>% 
+  DT::datatable(
+    options = list(
+      dom = "t"
+    )
+  )
+
+```
+
+
+
+
+```{r}
+#| echo: false
+metrics_long_loss <- reshape2::melt(fit_db_C, id.vars = 'epoch', measure.vars = c('train_loss',
+                                                                           'val_loss'), 
+                     variable.name = 'Type', value.name = 'Value')
+
+
+ggplot(metrics_long_loss, aes(x = epoch, y = Value, color = Type)) +
+  geom_line(size = 1) +
+  scale_color_manual(values = c("train_loss" = "lightblue", "val_loss" = "lightgreen")) +
+  labs(title = "Training and Validation Loss",
+       x = "Epoch",
+       y = "Loss") +
+  theme_minimal() +
+  theme(legend.title = element_blank())
+
+
+```
+
+## modello D
+
+```{r}
+#| include: false
+#| eval: true
+
+fit_db_D <- tibble(
+  epoch = 1:80,
+  train_loss = fit_D$metrics$loss,
+  val_loss = fit_D$metrics$val_loss,
+  train_accuracy = fit_D$metrics$accuracy,
+  val_accuracy = fit_D$metrics$val_accuracy,
+  fit = "D"
+)
+
+fit_db_D %>%
+  dplyr::mutate_if(is.numeric, ~round(., 4)) %>% 
+  DT::datatable(
+    options = list(
+      dom = "t"
+    )
+  )
+
+```
+
+
+
+
+```{r}
+#| echo: false
+metrics_long_loss <- reshape2::melt(fit_db_D, id.vars = 'epoch', measure.vars = c('train_loss',
+                                                                           'val_loss'), 
+                     variable.name = 'Type', value.name = 'Value')
+
+
+ggplot(metrics_long_loss, aes(x = epoch, y = Value, color = Type)) +
+  geom_line(size = 1) +
+  scale_color_manual(values = c("train_loss" = "lightblue", "val_loss" = "lightgreen")) +
+  labs(title = "Training and Validation Loss",
+       x = "Epoch",
+       y = "Loss") +
+  theme_minimal() +
+  theme(legend.title = element_blank())
+
+
+```
+
+
+## modello E
+
+```{r}
+#| include: false
+#| eval: true
+
+fit_db_E <- tibble(
+  epoch = 1:80,
+  train_loss = fit_E$metrics$loss,
+  val_loss = fit_E$metrics$val_loss,
+  train_accuracy = fit_E$metrics$accuracy,
+  val_accuracy = fit_E$metrics$val_accuracy,
+  fit = "E"
+)
+
+fit_db_E %>%
+  dplyr::mutate_if(is.numeric, ~round(., 4)) %>% 
+  DT::datatable(
+    options = list(
+      dom = "t"
+    )
+  )
+
+```
+
+
+
+
+```{r}
+#| echo: false
+metrics_long_loss <- reshape2::melt(fit_db_E, id.vars = 'epoch', measure.vars = c('train_loss',
+                                                                           'val_loss'), 
+                     variable.name = 'Type', value.name = 'Value')
+
+
+ggplot(metrics_long_loss, aes(x = epoch, y = Value, color = Type)) +
+  geom_line(size = 1) +
+  scale_color_manual(values = c("train_loss" = "lightblue", "val_loss" = "lightgreen")) +
+  labs(title = "Training and Validation Loss",
+       x = "Epoch",
+       y = "Loss") +
+  theme_minimal() +
+  theme(legend.title = element_blank())
+
+
+```
+
+:::
+# Accuracy Comparison
+
+::: {.panel-tabset}
+
+## modello A
+```{r}
+#| echo: false
+metrics_long_accuracy <- reshape2::melt(fit_db_A, id.vars = 'epoch', measure.vars = c('train_accuracy',
+                                                                           'val_accuracy'), 
+                     variable.name = 'Type', value.name = 'Value')
+
+
+ggplot(metrics_long_accuracy, aes(x = epoch, y = Value, color = Type)) +
+  geom_line(size = 1) +
+  scale_color_manual(values = c("train_accuracy" = "lightblue", "val_accuracy" = "lightgreen")) +
+  labs(title = "Training and Validation Accuracy",
+       x = "Epoch",
+       y = "Loss") +
+  theme_minimal() +
+  theme(legend.title = element_blank())
+```
+
+
+## modello B
+```{r}
+#| echo: false
+metrics_long_accuracy <- reshape2::melt(fit_db_B, id.vars = 'epoch', measure.vars = c('train_accuracy',
+                                                                           'val_accuracy'), 
+                     variable.name = 'Type', value.name = 'Value')
+
+
+ggplot(metrics_long_accuracy, aes(x = epoch, y = Value, color = Type)) +
+  geom_line(size = 1) +
+  scale_color_manual(values = c("train_accuracy" = "lightblue", "val_accuracy" = "lightgreen")) +
+  labs(title = "Training and Validation Accuracy",
+       x = "Epoch",
+       y = "Loss") +
+  theme_minimal() +
+  theme(legend.title = element_blank())
+```
+
+
+## modello C
+```{r}
+#| echo: false
+metrics_long_accuracy <- reshape2::melt(fit_db_C, id.vars = 'epoch', measure.vars = c('train_accuracy',
+                                                                           'val_accuracy'), 
+                     variable.name = 'Type', value.name = 'Value')
+
+
+ggplot(metrics_long_accuracy, aes(x = epoch, y = Value, color = Type)) +
+  geom_line(size = 1) +
+  scale_color_manual(values = c("train_accuracy" = "lightblue", "val_accuracy" = "lightgreen")) +
+  labs(title = "Training and Validation Accuracy",
+       x = "Epoch",
+       y = "Loss") +
+  theme_minimal() +
+  theme(legend.title = element_blank())
+```
+
+## modello D
+```{r}
+#| echo: false
+metrics_long_accuracy <- reshape2::melt(fit_db_D, id.vars = 'epoch', measure.vars = c('train_accuracy',
+                                                                           'val_accuracy'), 
+                     variable.name = 'Type', value.name = 'Value')
+
+
+ggplot(metrics_long_accuracy, aes(x = epoch, y = Value, color = Type)) +
+  geom_line(size = 1) +
+  scale_color_manual(values = c("train_accuracy" = "lightblue", "val_accuracy" = "lightgreen")) +
+  labs(title = "Training and Validation Accuracy",
+       x = "Epoch",
+       y = "Loss") +
+  theme_minimal() +
+  theme(legend.title = element_blank())
+```
+
+
+## modello E
+```{r}
+#| echo: false
+metrics_long_accuracy <- reshape2::melt(fit_db_E, id.vars = 'epoch', measure.vars = c('train_accuracy',
+                                                                           'val_accuracy'), 
+                     variable.name = 'Type', value.name = 'Value')
+
+
+ggplot(metrics_long_accuracy, aes(x = epoch, y = Value, color = Type)) +
+  geom_line(size = 1) +
+  scale_color_manual(values = c("train_accuracy" = "lightblue", "val_accuracy" = "lightgreen")) +
+  labs(title = "Training and Validation Accuracy",
+       x = "Epoch",
+       y = "Loss") +
+  theme_minimal() +
+  theme(legend.title = element_blank())
+```
+
+:::
+
+
+
+# Scelta del modello ottimale
+
+Osservando gli output forniti dai diversi modelli addestrati e i grafici presentati nelle due precedenti sezioni, possiamo giungere alle seguenti conclusioni:
+
+* In generale, data la scarsità dei dati (solo 768 osservazioni), sembrerebbe che i modelli meno complessi in termini di layer nascosti e nodi (A, D, E) sembrano performare meglio rispetto al modello più complesso (B), evitando overfitting.
+
+* Il modello più complesso in termini di numero di layer e nodi (B), overfitta in maniera evidente (si guardino i grafici dell'accuracy e della loss). Tuttavia, aggiungendo delle tecniche di riduzione dell'overfitting, come il kernel regularizer L2 e il Drop Out, la situazione migliora drasticamente (propri come presentato nel modello C).
+
+* In conclusione, i modelli  C ed E sembrerebbero essere quelli con le migliori performance.
+
+# Risultati sul test dataset
+
+Di seguito sono riportati i risultati ottenuti in termini di Loss e Accuracy dei due migliori modelli (i.e., modello C e modello E).
+
+```{r}
+
+# results_train_C <- network_C %>% 
+#   evaluate(x_test, y_test)
+# 
+# results_train_E <- network_E %>% 
+#   evaluate(x_test, y_test)
+# 
+# list(E = results_train_E, C = results_train_C) %>% 
+#   saveRDS(paste0(getwd(), "/results.rds"))
+
+results <- readr::read_rds(paste0(getwd(), "/results.rds"))
+
+res_table <- tibble::tibble(
+  measure = c("Loss", "Accuracy"),
+  model_C = results$C,
+  model_E = results$E
+) %>%
+  dplyr::mutate_if(is.numeric, ~round(., 4)) 
+
+res_table %>% 
+  DT::datatable(
+    options = list(
+      dom = "t"
+    )
+  )
+
+```
+
+
+
+
+
+
+
+
+
+
+
